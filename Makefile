@@ -8,7 +8,7 @@ bootstrap:
 up:
 	@scripts/up.sh
 
-# stack 끄기 (EC2 만 destroy, 데이터/IP 는 유지. DNS 는 Cloudflare 관리라 대상이 아님)
+# stack 끄기 (EC2 만 destroy. 데이터 볼륨과 Cloudflare 쪽은 유지, 공인 IP 는 반납됨)
 down:
 	@scripts/down.sh
 
@@ -24,7 +24,7 @@ snapshot:
 destroy-data:
 	@scripts/destroy-data.sh
 
-# 데이터 볼륨과 EIP 까지 전부 파괴 (Cloudflare 쪽은 건드리지 않음)
+# 01+02 전부 파괴 (데이터 볼륨, 그리고 터널·DNS·Access 까지. zone 자체만 남음)
 nuke:
 	@scripts/nuke.sh
 

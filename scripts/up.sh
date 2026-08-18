@@ -10,10 +10,10 @@ export TF_VAR_tfstate_bucket
 # 모든 트래픽이 터널로만 들어오므로, zone 권한이 Cloudflare 에 있어야 어떤
 # 호스트도 해석되지 않습니다. NS 가 안 넘어갔으면 배포 전에 막습니다.
 #
-# 이 검사는 반드시 01-foundation apply 보다 **먼저** 와야 합니다. apply 가 예전
-# Route53 와일드카드 레코드를 지우는데, NS 가 아직 Route53 를 가리키는 동안
-# 그러면 도메인이 통째로 해석되지 않습니다. 검사가 terraform 출력에 의존하지
-# 않고 dig 만 쓰는 것도 그래서입니다.
+# 이 검사는 반드시 01-foundation apply 보다 **먼저** 와야 합니다. 위임 전에도
+# 레코드와 터널은 정상적으로 만들어지지만 어느 이름도 해석되지 않으므로, 그냥
+# 두면 아래 SSH 대기가 7분 30초를 채우고 나서야 원인 불명으로 실패합니다.
+# 검사가 terraform 출력이 아니라 dig 만 쓰는 것도 apply 앞에 두기 위해서입니다.
 if ! delegated; then
   echo
   log "$DOMAIN 의 NS 가 Cloudflare 를 가리키지 않습니다."

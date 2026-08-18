@@ -4,7 +4,10 @@
 #  - 데이터 볼륨은 final_snapshot 설정 때문에 스냅샷 하나를 남깁니다.
 #    복구하려면 .env 의 DATA_SNAPSHOT_ID 에 그 스냅샷 ID 를 넣고 make up.
 #    복구가 끝나면 DATA_SNAPSHOT_ID 를 다시 비우세요.
-#  - Cloudflare 쪽(zone, 터널, Access 정책)은 아무것도 건드리지 않습니다.
+#  - 01-foundation 을 통째로 destroy 하므로 Cloudflare 쪽도 함께 사라집니다:
+#    터널, ingress 설정, DNS 레코드, Access 앱/정책, Transform Rule.
+#    zone 자체는 data source 라 남습니다(등록과 이전은 이 stack 밖의 일).
+#    다시 make up 하면 터널이 새 UUID 로 만들어지고 레코드도 거기에 맞춰집니다.
 #  - 00-global(state 버킷)은 건드리지 않습니다.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

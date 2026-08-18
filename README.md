@@ -4,10 +4,22 @@ EC2 + docker-compose + nginx-proxy + Cloudflare 위에 올린 개인 stack.
 
 두 가지 원칙으로 만들어졌습니다.
 
-1. **언제든 껐다 킬 수 있다.** `make down` 은 EC2 만 파괴하고, `make up` 은 같은 IP·같은 데이터로 되살립니다. 모든 상태는 코드(terraform + compose) 아니면 EBS 볼륨에 있고, 그 둘 다 재현 가능합니다.
+1. **언제든 껐다 킬 수 있다.** `make down` 은 EC2 만 파괴하고, `make up` 은 같은 호스트명·같은 데이터로 되살립니다. 공인 IP 는 인스턴스와 함께 반납되지만, 모든 이름이 IP 가 아니라 터널을 가리키므로 바뀌어도 손댈 것이 없습니다. 모든 상태는 코드(terraform + compose) 아니면 EBS 볼륨에 있고, 그 둘 다 재현 가능합니다.
 2. **의존성 순서대로 번호를 붙인다.** 낮은 번호가 먼저 서고, 파괴는 역순입니다. 전역 리소스는 `00-`.
 
 용어: `00`–`02` 는 terraform 이 만드는 **레이어**, `03` 이상은 호스트에서 도는 compose **호스트 stack** 입니다. (프로젝트 전체를 가리킬 때도 "stack" 이라 부릅니다 — 문맥으로 구분하세요.)
+
+## 결과적으로 무엇이 되었나
+
+EC2 한 대에 개인 서비스를 올리되, **인터넷에서 그 호스트로 들어오는 문은 하나도 열지 않은** 배치입니다.
+
+- **인바운드 규칙 0개.** 공개 서비스도 Grafana 도 SSH 도, 호스트의 cloudflared 가 Cloudflare 엣지로 걸어 나간 연결을 되타고 들어옵니다.
+- **인증서·포트·고정 IP 를 다룰 일이 없습니다.** TLS 는 엣지가 끝내고 origin 은 루프백 평문 HTTP 만 말합니다. acme-companion 도, 80/443 인바운드도, EIP 도 없습니다.
+- **서비스 추가는 compose 파일 하나.** 컨테이너에 `VIRTUAL_HOST` 를 달면 `*.<DOMAIN>` → 터널 → nginx-proxy 를 타고 바로 붙습니다. DNS 도 터널 ingress 도 `terraform apply` 도 필요 없습니다.
+- **껐다 켜도 그대로.** `make down` 은 EC2 만 버리고 데이터(EBS)·DNS·터널·Access 는 남깁니다. `make up` 이 같은 호스트명·같은 데이터로 되살립니다.
+- **잠겨도 들어갈 길이 하나 더 있습니다.** Cloudflare 쪽이 죽어도 SSM Session Manager 로 들어가고, 그 경로는 인바운드 개방도 `terraform apply` 도 요구하지 않습니다.
+- **클릭으로 만드는 것이 없습니다.** 도메인 등록과 zone 이전을 빼면 터널·ingress·DNS·Access·Transform Rule 이 전부 `01-foundation/cloudflare.tf` 안에 있습니다.
+- **꺼둔 상태 월 $6.5, 켜면 $19 안팎** (ap-northeast-2, t4g.small 기준).
 
 ## 구성
 
@@ -19,7 +31,7 @@ EC2 + docker-compose + nginx-proxy + Cloudflare 위에 올린 개인 stack.
 | `03-proxy` | nginx-proxy (터널 뒤의 vhost 라우터, TLS 없음) | compose | **볼륨만 유지** |
 | `04-monitoring` | Prometheus + Grafana + node-exporter | compose | **볼륨만 유지** |
 
-경계는 `01` 과 `02` 사이에 있습니다. `01` 은 잃으면 아픈 것(데이터·IP), `02` 는 언제든 버려도 되는 것.
+경계는 `01` 과 `02` 사이에 있습니다. `01` 은 잃으면 아픈 것(데이터·도메인 앞단), `02` 는 언제든 버려도 되는 것.
 
 zone 자체는 이 stack 밖입니다 — 도메인 등록과 Cloudflare 로의 zone 이전은 손으로 합니다. 그 안의 레코드·터널·Access·Rule 은 `01-foundation/cloudflare.tf` 가 관리합니다.
 
@@ -61,7 +73,7 @@ zone 자체는 이 stack 밖입니다 — 도메인 등록과 Cloudflare 로의 
 
 **컨벤션의 예외는 직접 관리해야 합니다.** 이 zone 이 stack 전용이라는 전제가 깨지는 레코드 — 예를 들어 손으로 만든 `blog.<DOMAIN>` — 는 terraform 이 모릅니다. 더 구체적인 레코드가 와일드카드를 이기므로 지금은 정상 동작하지만, 그 레코드를 지우는 순간 와일드카드가 그 이름을 받아 이 stack 의 nginx-proxy 로 흘려보냅니다. zone 에 stack 밖 레코드가 있다면 `cloudflare.tf` 로 가져오거나, 최소한 있다는 사실을 알고 계세요.
 
-**apex 는 와일드카드에 포함되지 않습니다.** `*.stack.kwonci.run` 은 `stack.kwonci.run` 자신을 덮지 않으므로, 그 이름을 쓰려면 레코드를 따로 만들어야 합니다.
+**apex 는 와일드카드에 포함되지 않습니다.** `*.example.com` 은 `example.com` 자신을 덮지 않으므로, apex 로 서비스를 띄우려면 DNS 레코드와 터널 ingress 규칙을 `01-foundation/cloudflare.tf` 에 따로 추가해야 합니다.
 
 **`X-Origin-Secret` 은 이제 필수가 아닙니다.** 예전에는 SG 를 CF 엣지 대역으로 좁혀 80/443 을 열어두었고, 그 대역이 CF 전 고객 공용이라 "남의 CF 계정을 경유한 우회"가 남아 이 헤더 검증이 그 구멍을 막았습니다. 인바운드가 0 이 된 지금은 우회할 직접 경로 자체가 없습니다. 비용이 없어 한 겹으로 남겨 두었을 뿐이니, 지운다면 Transform Rule(`01-foundation/cloudflare.tf`)과 `scripts/lib.sh` 의 `render_proxy_secret` 을 **함께** 지우세요. 한쪽만 없애면 모든 요청이 403 이 됩니다.
 
@@ -136,34 +148,37 @@ EC2 의 docker `data-root` 가 `/data/docker` — 즉 EBS 데이터 볼륨 — �
 
 DNS 레코드는 손으로 만들 것이 없습니다. `*.<DOMAIN>` 와일드카드 CNAME 을 포함해 전부 `01-foundation/cloudflare.tf` 가 터널을 가리키도록 만듭니다.
 
-`make up` 은 NS 이전이 확인되기 전에는 terraform 을 아예 돌리지 않습니다. `01-foundation` 이 예전 Route53 와일드카드 레코드를 지우는데, NS 가 아직 Route53 를 가리키는 동안 그러면 도메인이 통째로 해석되지 않기 때문입니다.
+`make up` 은 NS 이전이 확인되기 전에는 terraform 을 아예 돌리지 않습니다(`scripts/lib.sh` 의 `delegated`). 위임 전에도 레코드와 터널은 만들어지지만 `<tunnel-id>.cfargotunnel.com` 은 Cloudflare 엣지 안에서만 해석되므로, 배포는 SSH 를 기다리다 7분 30초 만에 실패합니다. 원인이 드러나지 않는 그 실패 대신 앞에서 멈춥니다.
 
-### 2. 터널과 Access 만들기
+### 2. Cloudflare API 토큰 만들기
 
-Zero Trust 대시보드에서:
+**터널도 ingress 도 DNS 도 Access 도 Transform Rule 도 대시보드에서 손으로 만들지 않습니다.** `01-foundation/cloudflare.tf` 가 전부 만듭니다. 손으로 줄 것은 토큰 하나와 account ID 뿐입니다.
 
-1. Networks > Tunnels 에서 터널 생성 → 나오는 `eyJ...` 토큰을 `.env` 의 `CLOUDFLARE_TUNNEL_TOKEN` 에 넣습니다.
-2. 그 터널에 public hostname 두 개를 답니다:
-   - `ssh.<DOMAIN>` → `SSH` → `localhost:22`
-   - `grafana.<DOMAIN>` → `HTTP` → `localhost:3000`
-   - `*.<DOMAIN>` → `HTTP` → `localhost:80` (nginx-proxy)
-3. Access > Applications 에서 두 hostname 각각에 self-hosted 앱을 만들고 정책을 겁니다(본인 이메일만 허용 등). **이걸 안 하면 터널이 두 서비스를 그냥 인터넷에 공개합니다.**
+My Profile > API Tokens > Create Token > Custom token 으로 다음 권한을 주세요. 하나라도 빠지면 그 리소스를 만드는 지점에서 apply 가 403 으로 멈춥니다.
 
-### 3. 비밀 헤더 규칙
+| 스코프 | 권한 | 무엇에 쓰이나 |
+|---|---|---|
+| Account | Cloudflare Tunnel: Edit | 터널과 ingress 규칙 |
+| Account | Access: Apps and Policies: Edit | `ssh`/`grafana` 앞의 인증 |
+| Zone | Zone: Read | zone ID 조회 |
+| Zone | DNS: Edit | 와일드카드 + 관리 평면 CNAME |
+| Zone | Transform Rules: Edit | `X-Origin-Secret` 헤더 규칙 |
 
-Rules > Transform Rules > Modify Request Header 에서, **모든 요청**에 정적 헤더를 추가합니다:
+Zone 스코프는 이 도메인 하나로 좁혀도 됩니다. 나온 토큰을 `.env` 의 `CLOUDFLARE_API_TOKEN` 에, 대시보드 우측 하단(또는 URL)의 32자리 hex 를 `CLOUDFLARE_ACCOUNT_ID` 에 넣습니다.
 
-- 이름 `X-Origin-Secret`, 값은 `openssl rand -hex 32` 로 만든 문자열
-- 같은 값을 `.env` 의 `CF_ORIGIN_SECRET` 에 넣습니다
+`ACCESS_EMAILS` 에는 Grafana 와 SSH 에 들어올 이메일을 쉼표로 적습니다. **비면 Access 정책이 모두를 막아 SSH 조차 불가능해지므로 `make up` 이 거부합니다.**
 
-조건을 좁히지 마세요. 좁히면 그 경로의 요청이 origin 에서 403 으로 끊깁니다.
+Zero Trust 조직만은 예외로 한 번 손이 갑니다. 계정에 아직 없다면 대시보드에서 팀 이름을 정해 만들어 두세요 — terraform 이 만드는 것은 그 안의 앱과 정책이지 조직 자체가 아닙니다. 로그인 방법은 기본값인 One-time PIN 이면 충분합니다(Access 가 그 이메일로 코드를 보냅니다).
 
-### 4. 켜기
+### 3. 켜기
 
 ```sh
 cp .env.example .env
-$EDITOR .env          # ZONE, DOMAIN, GRAFANA_ADMIN_PASSWORD,
-                      # CLOUDFLARE_TUNNEL_TOKEN, CF_ORIGIN_SECRET 는 필수
+$EDITOR .env          # 반드시 채울 것: DOMAIN, CLOUDFLARE_API_TOKEN,
+                      #   CLOUDFLARE_ACCOUNT_ID, ACCESS_EMAILS,
+                      #   CF_ORIGIN_SECRET (openssl rand -hex 32),
+                      #   GRAFANA_ADMIN_PASSWORD (8자 이상)
+                      # 나머지는 기본값 그대로 둬도 뜹니다.
 
 make bootstrap        # 최초 1회: tfstate 버킷 생성 + state 를 S3 로 migrate
 make up
@@ -177,7 +192,7 @@ make up
 
 ```sh
 make up        # 켜기 / 변경분 반영 (멱등)
-make down      # EC2 만 파괴. 데이터·IP·DNS 는 유지
+make down      # EC2 만 파괴. 데이터·DNS·터널은 유지 (공인 IP 는 반납됨)
 make deploy    # 인프라는 두고 compose stack 만 재배포 (이미지 pull 포함)
 make snapshot  # 데이터 볼륨 스냅샷을 지금 하나 만들기
 make destroy-data  # 데이터 볼륨만 파괴 (스냅샷 복구용). make down 이 선행되어야 함
@@ -186,7 +201,7 @@ make ssh       # 호스트 셸.  make ssh ARGS='docker ps'
 make plan      # apply 없이 01/02 변경분 확인
 make validate  # AWS 없이 문법 검사 (.env 없어도 동작)
 make fmt       # terraform fmt -recursive
-make nuke      # 데이터 볼륨까지 전부 파괴 (Cloudflare 쪽은 안 건드림)
+make nuke      # 01+02 전부 파괴. 데이터 볼륨도, 터널·DNS·Access 도 사라집니다
 ```
 
 `make down` 은 terraform destroy 전에 호스트에 접속해 컨테이너를 멈추고, docker 와 containerd 를 내린 뒤 `/data` 의 하위 마운트부터 역순으로 언마운트합니다. `systemctl stop docker` 만으로는 overlay2 마운트가 남아 언마운트가 반드시 실패하기 때문입니다. 그래도 실패하면 destroy 를 진행하지 않고 멈춥니다 — 마운트된 볼륨을 force detach 하면 파일시스템이 깨집니다.
@@ -217,13 +232,11 @@ networks:
 
 3. `make deploy`
 
-DNS 도 터널 ingress 도 건드릴 필요가 없습니다. `*.<DOMAIN>` CNAME 이 터널을 가리키고, 터널의 와일드카드 규칙이 nginx-proxy 로 넘기며, nginx-proxy 가 `VIRTUAL_HOST` 를 보고 라우팅합니다. `.env` 의 값이 필요하면 `${VAR}` 로 참조하면 됩니다.
+DNS 도 터널 ingress 도 건드릴 필요가 없습니다. `*.<DOMAIN>` CNAME 이 터널을 가리키고, 터널의 와일드카드 규칙이 nginx-proxy 로 넘기며, nginx-proxy 가 `VIRTUAL_HOST` 를 보고 라우팅합니다. 즉 서비스를 하나 늘릴 때 `01-foundation` 을 apply 할 일이 없습니다. `.env` 의 값이 필요하면 `${VAR}` 로 참조하면 됩니다.
 
-**관리용 서비스라면 이 방식을 쓰지 마세요.** `VIRTUAL_HOST` 를 붙이는 순간 인증 없이 인터넷에 열립니다. Grafana 처럼 나만 볼 것은 `ports:` 로 `127.0.0.1` 에만 게시하고, Cloudflare 터널에 hostname 을 추가한 뒤 Access 정책을 거세요. `04-monitoring` 의 grafana 서비스가 그 예시입니다.
+**관리용 서비스라면 이 방식을 쓰지 마세요.** `VIRTUAL_HOST` 를 붙이는 순간 인증 없이 인터넷에 열립니다. Grafana 처럼 나만 볼 것은 `ports:` 로 `127.0.0.1` 에만 게시하고, `01-foundation/cloudflare.tf` 의 `local.tunnel_hosts` 에 한 줄을 더하세요 — 그 map 하나에서 CNAME·터널 ingress·Access 앱이 함께 만들어지고, 새 호스트는 와일드카드보다 앞 순서에 놓입니다. 이때는 `01-foundation` 을 apply 해야 합니다. `04-monitoring` 의 grafana 서비스가 그 예시입니다.
 
 compose 파일 맨 위에 `name:` 을 넣어 프로젝트 이름을 고정하세요. 안 그러면 프로젝트 이름이 디렉토리 이름이 되어, 나중에 번호를 바꿀 때 볼륨이 전부 고아가 됩니다.
-
-DNS 도 터널 ingress 도 손댈 필요가 없습니다. `*.<domain>` CNAME 이 이미 터널을 가리키고, 터널의 와일드카드 규칙이 nginx-proxy 로 넘기며, 거기서부터는 `VIRTUAL_HOST` 가 정합니다. 즉 서비스를 하나 늘릴 때 `01-foundation` 을 apply 할 일이 없습니다.
 
 인증서는 Cloudflare 엣지가 담당하므로 `ACME_HOST` 같은 것은 없습니다. origin 은 평문 HTTP 로만 말하고, 그 구간은 루프백입니다.
 
@@ -238,7 +251,7 @@ DNS 도 터널 ingress 도 손댈 필요가 없습니다. `*.<domain>` CNAME 이
 | S3 tfstate | ~$0 |
 | Cloudflare (zone + 터널 + Access 50인) | $0 |
 
-합쳐서 월 $6.5 정도입니다. NS 를 옮긴 뒤 Route53 의 hosted zone 을 지우면 $0.50 이 빠집니다 — 이 stack 은 그 zone 을 더 이상 참조하지 않지만, 지우는 것은 직접 하세요(다른 것이 아직 쓰고 있을 수 있습니다). SSM Session Manager 는 EC2 에서 무료라 복구 경로에는 요금이 붙지 않습니다(세션 로그를 S3/CloudWatch 로 보내면 그쪽에 붙으므로 켜지 않았습니다).
+합쳐서 월 $6.5 정도입니다. 이 stack 은 Route53 를 쓰지 않으므로, 예전에 만들어 둔 hosted zone 이 남아 있다면 지워서 $0.50 을 더 줄일 수 있습니다 — 다른 것이 아직 쓰고 있을 수 있으니 확인은 직접 하세요. SSM Session Manager 는 EC2 에서 무료라 복구 경로에는 요금이 붙지 않습니다(세션 로그를 S3/CloudWatch 로 보내면 그쪽에 붙으므로 켜지 않았습니다).
 
 켜져 있을 때는 인스턴스 값(t4g.small ~$12/월)이 더해집니다. `credit_specification` 을 지정하지 않아 AWS 기본값인 unlimited 로 뜨므로, 24시간 평균 CPU 가 baseline(20%)을 넘으면 크레딧이 추가 청구됩니다. 이 정도 부하로는 거의 넘지 않지만, 뭔가 폭주하면(침해당한 컨테이너가 채굴을 돌리는 경우 포함) 상한 없이 조용히 쌓이므로 가끔 청구서를 보세요. standard 로 바꾸면 상한은 생기지만 t4g 는 launch credit 이 없어서 매 `make up` 의 docker 설치가 0.4 vCPU 로 스로틀됩니다.
 
@@ -256,13 +269,17 @@ make up
 $EDITOR .env                 # 복구 후 DATA_SNAPSHOT_ID 를 다시 비웁니다
 ```
 
-정말 0 으로 만들려면 `make nuke` 입니다. 이 경우 볼륨이 실제로 파괴되므로 `final_snapshot` 이 남고, 위 절차 없이 `DATA_SNAPSHOT_ID` 만 채우고 `make up` 하면 그대로 복구됩니다. DNS 는 터널 UUID 를 가리키므로 IP 가 바뀌어도 손댈 것이 없습니다.
+정말 0 으로 만들려면 `make nuke` 입니다. 이 경우 볼륨이 실제로 파괴되므로 `final_snapshot` 이 남고, 위 절차 없이 `DATA_SNAPSHOT_ID` 만 채우고 `make up` 하면 그대로 복구됩니다.
+
+**`make nuke` 는 `01-foundation` 을 통째로 destroy 한다는 점에서 `make down` 과 다릅니다.** 터널·DNS 레코드·Access 앱·Transform Rule 이 전부 함께 사라지고, zone 만 남습니다(그건 data source 입니다). 다시 `make up` 하면 터널이 새 UUID 로 만들어지고 레코드도 거기에 맞춰지므로 손으로 고칠 것은 없지만, Access 세션은 끊기고 처음처럼 다시 로그인해야 합니다.
 
 ## 설정
 
-`.env` 하나가 전부입니다. `scripts/lib.sh` 가 이 파일을 읽어 `TF_VAR_*` 로 terraform 에 넘기고, 같은 파일이 EC2 로 복사되어 `docker compose --env-file` 로 쓰입니다. terraform 의 `.tfvars` 는 쓰지 않습니다 — 설정이 두 군데로 갈라지지 않도록.
+`.env` 하나가 전부입니다. `scripts/lib.sh` 가 이 파일을 읽어 `TF_VAR_*` 로 terraform 에 넘기고, 같은 파일이 EC2 로 복사되어 `docker compose --env-file` 로 쓰입니다.
 
-`.env` 는 gitignore 되어 있고, 호스트로는 mode 600 으로 전송됩니다.
+각 레이어의 `terraform.tfvars` 도 `lib.sh` 가 같은 순간 같은 `.env` 에서 만듭니다. 설정이 두 군데로 갈라진 것이 아니라 파생물입니다 — `make` 래퍼 없이 `terraform -chdir=01-foundation plan` 을 직접 돌릴 수 있게 하려고 둡니다. 손으로 고치지 마세요. 다음 명령이 덮어씁니다.
+
+`.env` 는 gitignore 되어 있고, 호스트로는 mode 600 으로 전송됩니다. `01-foundation/terraform.tfvars` 에는 Cloudflare API 토큰이 들어가므로 생성 시점에 같은 600 이 걸리고, 역시 gitignore 됩니다.
 
 Grafana 비밀번호는 특별 취급합니다. `GF_SECURITY_ADMIN_PASSWORD` 는 Grafana DB 가 처음 만들어질 때만 반영되고, 그 DB 는 `/data` 에 남아 EC2 를 재생성해도 살아남습니다. 즉 환경변수만으로는 한 번 정해진 비밀번호가 절대 바뀌지 않습니다. 그래서 `make deploy` 가 배포할 때마다 `grafana cli admin reset-admin-password` 로 `.env` 값에 맞춥니다.
 
