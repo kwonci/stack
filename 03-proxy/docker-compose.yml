@@ -1,0 +1,61 @@
+# 03-proxy
+# 공개 평면의 진입점. 컨테이너에 VIRTUAL_HOST 환경변수만 달면 자동으로
+# 라우팅됩니다.
+#
+# 인터넷에서 이 컨테이너로 오는 경로는 하나뿐입니다:
+#   브라우저 -> Cloudflare 엣지 -> 터널 -> 호스트의 cloudflared -> 127.0.0.1:80
+# 그래서 80 번을 루프백에만 게시하고, TLS 도 하지 않습니다. 인증서는 전부
+# Cloudflare 가 담당합니다 (04-monitoring 의 Grafana 와 같은 방식).
+#
+# vhost 설정은 named volume 에 있고, docker data-root 가 /data 이므로
+# EC2 를 destroy 해도 살아남습니다.
+
+# 디렉토리 이름이 바뀌어도 볼륨이 고아가 되지 않도록 프로젝트 이름을 고정합니다.
+name: proxy
+
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:1.11.6
+    container_name: nginx-proxy
+    restart: unless-stopped
+    # 루프백에만 게시합니다. cloudflared 는 호스트에서 돌므로 이걸로 충분하고,
+    # SG 에 인바운드 규칙이 없어도 외부에서 닿을 수 없다는 것이 이중으로 보장됩니다.
+    ports:
+      - "127.0.0.1:80:80"
+    environment:
+      # 인증서가 없으므로 443 server 블록을 아예 만들지 않습니다. 이걸 빼면
+      # 기본값 redirect 가 걸리고, nginx-proxy 가 cert 를 못 찾아 noredirect 로
+      # 되돌아가는 경로에 의존하게 됩니다. 명시하는 편이 안전합니다.
+      HTTPS_METHOD: nohttps
+    volumes:
+      - conf:/etc/nginx/conf.d
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      # 아래 두 개는 named volume 안쪽 경로에 겹쳐 마운트합니다. docker 가 대상
+      # 경로 깊이 순으로 마운트하므로 볼륨이 먼저, 파일이 나중에 올라갑니다.
+      #
+      # conf.d/*.conf 는 http 컨텍스트로, vhost.d/default 는 각 server 블록으로
+      # include 됩니다. docker-gen 이 만드는 default.conf 는 그대로 두고 옆에 끼워
+      # 넣는 방식이라 nginx-proxy 템플릿을 갈아엎지 않아도 됩니다.
+      - ./conf.d/00-realip.conf:/etc/nginx/conf.d/00-realip.conf:ro
+      # scripts/deploy.sh 가 .env 의 CF_ORIGIN_SECRET 을 넣어 렌더링합니다
+      # (nginx 설정은 환경변수를 읽지 못하므로). 값이 secret 이라 gitignore 됩니다.
+      - ./vhost.d/default:/etc/nginx/vhost.d/default:ro
+      # 주의: :ro 는 소켓 파일 자체만 읽기전용으로 만들 뿐, 이 소켓 너머의
+      # Docker API 는 완전한 read-write 입니다. 즉 공개 트래픽을 직접 파싱하는
+      # 이 컨테이너가 호스트 root 와 동등한 권한을 쥐고 있습니다.
+      # nginx-proxy 의 표준 구성이라 그대로 두지만, 안전해서가 아닙니다.
+      # 격리하려면 tecnativa/docker-socket-proxy 를 앞에 두세요.
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    networks:
+      - proxy
+
+volumes:
+  conf:
+  vhost:
+  html:
+
+networks:
+  proxy:
+    # 다른 stack 이 external 로 붙을 수 있도록 이름을 고정합니다.
+    name: proxy

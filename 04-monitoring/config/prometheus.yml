@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 30s
+
+# /data 는 docker data-root 이기도 하므로 TSDB 가 볼륨을 다 먹으면 dockerd 가
+# 통째로 멈춥니다. 시간 조건과 별개로 크기 상한을 둡니다.
+storage:
+  tsdb:
+    retention:
+      time: 90d
+      size: 8GB
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # node-exporter 는 host network 에 있으므로 컨테이너 이름으로는 닿지 않습니다.
+  # compose 의 extra_hosts 가 host.docker.internal 을 호스트 게이트웨이로 매핑합니다.
+  - job_name: node
+    static_configs:
+      - targets: ["host.docker.internal:9100"]

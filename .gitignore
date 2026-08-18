@@ -1,0 +1,24 @@
+# 단일 설정 파일 (secret 포함)
+.env
+.env.*
+!.env.example
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# bootstrap 이 생성하는 것들. 커밋하면 다른 머신에서 재부트스트랩이 막힙니다.
+backend.hcl
+00-global/backend.tf
+
+# .env 에서 파생됩니다. 소스가 아니므로 커밋하지 않습니다.
+terraform.tfvars
+
+# scripts/lib.sh 가 CF_ORIGIN_SECRET 을 넣어 생성합니다. 값이 secret 입니다.
+03-proxy/vhost.d/default
+
+# 스크립트가 관리하는 stack 전용 known_hosts
+.ssh_known_hosts*
