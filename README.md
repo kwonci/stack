@@ -213,9 +213,11 @@ make ssh ARGS='sudo shutdown -h now'
 make down          # 정지된 인스턴스에서 detach 하는 것은 안전합니다
 ```
 
+`make down` 은 인스턴스가 `running` 이 아니면 호스트 정지 절차를 건너뜁니다. OS 가 이미 내려가면서 docker 를 멈추고 `/data` 를 뗐으니 할 일이 없고, 그 상태에서는 SSH 도 당연히 되지 않기 때문입니다. 판단은 terraform state 가 아니라 EC2 에 직접 묻습니다 — 막아야 하는 것은 "state 에 있다"가 아니라 "지금 실제로 돌고 있는데 닿지 못한다"이기 때문입니다.
+
 반대로 `make down` 이 언마운트까지는 했는데 destroy 에서 실패했다면, 호스트는 docker 가 꺼지고 `/data` 가 안 붙은 상태로 남습니다. terraform 은 이 상태를 정상으로 보므로, `make up` 이 배포 직전에 `/data` 마운트와 docker 기동을 직접 확인하고 되돌립니다.
 
-**인스턴스를 `stop` 하지 마세요.** `aws ec2 stop-instances` 로 멈춘 상태는 terraform 이 정상으로 보기 때문에 `make up` 이 아무것도 하지 않습니다. 끄려면 `make down` 을 쓰세요.
+**인스턴스를 `stop` 하지 마세요.** `aws ec2 stop-instances` 로 멈춘 상태는 terraform 이 정상으로 보기 때문에 `make up` 이 아무것도 하지 않습니다. 게다가 루트 볼륨이 그대로 남아 요금은 계속 나갑니다(기본값 20GB 면 월 $1.82). 끄려면 `make down` 을 쓰세요 — 이미 stop 해 버렸더라도 그대로 `make down` 하면 됩니다.
 
 ## 서비스 추가하기
 
@@ -304,7 +306,7 @@ Grafana 비밀번호는 특별 취급합니다. `GF_SECURITY_ADMIN_PASSWORD` 는
 - **arm64 기본값.** `INSTANCE_TYPE=t4g.small` + `INSTANCE_ARCH=arm64`. 둘은 반드시 맞아야 합니다. x86 으로 바꾸려면 `t3.small` + `amd64`.
 - **AMI 는 고정됩니다.** 인스턴스에 `ignore_changes = [ami]` 가 걸려 있어, Canonical 이 새 이미지를 내도 `make up` 이 멀쩡한 인스턴스를 교체하지 않습니다. OS 를 갱신하려면 `make down && make up`. 컨테이너 이미지는 `make deploy` 가 매번 `pull` 하므로 태그만 올리면 반영됩니다.
 - **AZ 는 바꾸지 마세요.** EBS 는 AZ 에 묶여 있습니다. `AWS_AZ` 를 바꾸면 데이터 볼륨이 재생성됩니다.
-- **SG 에 인바운드 규칙이 하나도 없습니다.** 평상시에는 cloudflared 터널로, 터널이 죽으면 SSM 으로 들어갑니다(위 "보안 경계" 참고). 둘 다 안 되면 `make down` 이 거부됩니다 — 호스트를 안전하게 멈출 수 없으면 볼륨을 떼지 않습니다.
+- **SG 에 인바운드 규칙이 하나도 없습니다.** 평상시에는 cloudflared 터널로, 터널이 죽으면 SSM 으로 들어갑니다(위 "보안 경계" 참고). **돌고 있는** 인스턴스에 둘 다 안 닿으면 `make down` 이 거부됩니다 — 호스트를 안전하게 멈출 수 없으면 볼륨을 떼지 않습니다. 이미 정지·종료된 인스턴스는 뗄 것이 없으므로 그대로 진행합니다.
 - **cloud-init 이 cloudflared 를 docker 보다 먼저 세웁니다.** 그래야 `make up` 이 몇 분씩 기다리지 않습니다. 그 설치가 실패해도 SSM 은 살아 있으므로 `SSH_VIA=ssm make ssh ARGS='journalctl -u cloudflared -n 50'` 으로 확인하세요.
 - **터널 토큰은 user_data 로 전달됩니다.** 따라서 terraform state 와 IMDS 양쪽에 남습니다. 인스턴스의 `http_put_response_hop_limit = 1` 덕분에 컨테이너에서는 IMDS 에 닿지 못하지만, 호스트 root 를 잡히면 그대로 읽힙니다. 그 경우 Cloudflare 대시보드에서 터널을 지우고 새로 만드는 것이 유일한 무효화 방법입니다.
 - **`make down` 중에는 Grafana 와 SSH 도 닿지 않습니다.** 터널이 인스턴스와 함께 사라지기 때문입니다. 예전에는 DNS 만 살아 있고 접속은 어차피 안 됐으니 실질적인 차이는 없지만, Cloudflare 쪽에서는 터널이 "비활성"으로 보입니다.

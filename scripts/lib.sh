@@ -385,6 +385,27 @@ quiesce_host() {
     return 0
   }
 
+  # 이미 멈춰 있는 인스턴스는 OS 가 정상 종료되면서 docker 를 내리고 /data 를
+  # 떼어 놓은 상태입니다. 그때의 detach 는 안전한데 SSH 는 당연히 되지 않으므로,
+  # 여기서 걸러내지 않으면 아래 검사가 "응답 없음"으로 보고 중단시킵니다.
+  # 그러면 README 가 안내하는 `shutdown -h now` 뒤의 make down 이 영영 막힙니다.
+  #
+  # 판단은 terraform state 가 아니라 EC2 에 직접 묻습니다 — 위험한 경우는
+  # "state 에 있다"가 아니라 "지금 실제로 돌고 있다"이기 때문입니다.
+  local id state
+  id="$(instance_id)" || die "인스턴스 ID 를 확인하지 못했습니다."
+  state="$(aws ec2 describe-instances --instance-ids "$id" \
+    --query 'Reservations[].Instances[].State.Name' --output text 2>/dev/null)" || state=""
+
+  if [ -z "$state" ]; then
+    log "EC2 에 $id 가 없습니다(이미 종료됨). 정지할 것이 없어 넘어갑니다."
+    return 0
+  fi
+  if [ "$state" != running ]; then
+    log "인스턴스가 $state 상태입니다. OS 가 이미 내려가 있어 정지 절차를 건너뜁니다."
+    return 0
+  fi
+
   local name host
   name="$(ssh_hostname)" || die "접속 대상 호스트를 정하지 못했습니다."
   [ -n "$name" ] || die "접속 대상 호스트가 비어 있습니다."
